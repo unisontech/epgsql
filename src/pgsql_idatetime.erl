@@ -17,6 +17,9 @@
 -define(usecs_per_minute, 60000000).
 -define(usecs_per_sec, 1000000).
 
+% The number of microseconds between 1 Jan 1970 and 1 Jan 2000  
+-define(iusecs_y2k_timestamp, 946684800000000).
+
 decode(date, <<J:?int32>>)                         -> j2date(?postgres_epoc_jdate + J);
 decode(time, <<N:?int64>>)                         -> i2time(N);
 decode(timetz, <<N:?int64, TZ:?int32>>)            -> {i2time(N), TZ};
@@ -87,7 +90,8 @@ i2timestamp2(D, T) ->
 
 timestamp2i({Date, Time}) ->
     D = date2j(Date) - ?postgres_epoc_jdate,
-    D * ?usecs_per_day + time2i(Time).
+    D * ?usecs_per_day + time2i(Time);
+timestamp2i(TimeStamp) when is_integer(TimeStamp) -> TimeStamp - ?iusecs_y2k_timestamp.
 
 tmodulo(T, U) ->
     case T div U of

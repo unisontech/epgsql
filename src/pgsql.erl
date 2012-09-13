@@ -112,30 +112,43 @@ with_transaction(C, F) ->
 
 %% -- internal functions --
 
-receive_result(C, Result) ->
-    try receive_result(C, [], []) of
+receive_result(C, InitialResult) ->
+    pgsql_receive_result(C, InitialResult, fun(Result, _Acc) -> Result end).
+
+receive_results(C, InitialResult) ->
+    case pgsql_receive_result(C, InitialResult, fun(Result, Acc) -> [Result | Acc] end) of
+        Results when is_list(Results) -> lists:reverse(Results);
+        Result -> [Result]
+    end.
+
+pgsql_receive_result(C, InitialResult, ResultCollector) ->
+    monitored_pgsql_receive_result(C, fun(MonitorRef) -> pgsql_receive_result(C, InitialResult, ResultCollector, MonitorRef) end).
+
+% monitor pgsql connection and return gracefully if it goes down.
+monitored_pgsql_receive_result(Connection, Fun) ->
+    MonitorRef = erlang:monitor(process, Connection),
+    Ret = Fun(MonitorRef),
+    erlang:demonitor(MonitorRef),
+    Ret.
+
+pgsql_receive_result(C, Result, ResultCollector, MonitorRef) ->
+    try pgsql_receive_result_ll(C, [], [], MonitorRef) of
         done    -> Result;
-        R       -> receive_result(C, R)
+        R       -> pgsql_receive_result(C, ResultCollector(R, Result), ResultCollector, MonitorRef)
     catch
         throw:E -> E
     end.
 
-receive_results(C, Results) ->
-    try receive_result(C, [], []) of
-        done    -> lists:reverse(Results);
-        R       -> receive_results(C, [R | Results])
-    catch
-        throw:E -> E
-    end.
-
-receive_result(C, Cols, Rows) ->
+pgsql_receive_result_ll(C, Cols, Rows, MonitorRef) ->
     receive
         {pgsql, C, {columns, Cols2}} ->
-            receive_result(C, Cols2, Rows);
+            pgsql_receive_result_ll(C, Cols2, Rows, MonitorRef);
         {pgsql, C, {data, Row}} ->
-            receive_result(C, Cols, [Row | Rows]);
+            pgsql_receive_result_ll(C, Cols, [Row | Rows], MonitorRef);
         {pgsql, C, {error, _E} = Error} ->
             Error;
+        {pgsql, C, {fatal_error, E}} ->
+            throw({error, E});
         {pgsql, C, {complete, {_Type, Count}}} ->
             case Rows of
                 [] -> {ok, Count};
@@ -148,6 +161,9 @@ receive_result(C, Cols, Rows) ->
         {pgsql, C, timeout} ->
             throw({error, timeout});
         {'EXIT', C, _Reason} ->
+            throw({error, closed});
+        % Yikes, the pgsql connection we are connected thru went down, stop processing and return error.
+        {'DOWN', MonitorRef, process, _Pid, _Info} ->
             throw({error, closed})
     end.
 
@@ -160,6 +176,8 @@ receive_extended_result(C, Rows) ->
             receive_extended_result(C, [Row | Rows]);
         {pgsql, C, {error, _E} = Error} ->
             Error;
+        {pgsql, C, {fatal_error, E}} ->
+            {error, E};
         {pgsql, C, suspended} ->
             {partial, lists:reverse(Rows)};
         {pgsql, C, {complete, {_Type, Count}}} ->

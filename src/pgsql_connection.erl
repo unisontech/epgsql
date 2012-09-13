@@ -31,6 +31,8 @@
           statement,
           txstatus}).
 
+-define(TIMEOUT, 60000).
+
 -define(int16, 1/big-signed-unit:16).
 -define(int32, 1/big-signed-unit:32).
 
@@ -78,6 +80,11 @@ init([]) ->
     process_flag(trap_exit, true),
     {ok, startup, #state{}}.
 
+% Correctly handle fatal error (ERRCODE_CRASH_SHUTDOWN - 57P02) during querying state to avoid lock on receive (in pgsql:receive_results).
+handle_event({notice, Notice}, querying, State) when Notice#error.code == <<"57P02">> ->
+    notify(State, {fatal_error, Notice}),
+    {next_state, querying, State};
+
 handle_event({notice, _Notice} = Msg, State_Name, State) ->
     notify_async(State, Msg),
     {next_state, State_Name, State};
@@ -118,7 +125,7 @@ code_change(_Old_Vsn, State_Name, State, _Extra) ->
 %% -- states --
 
 startup({connect, Host, Username, Password, Opts}, From, State) ->
-    Timeout = proplists:get_value(timeout, Opts, 5000),
+    Timeout = proplists:get_value(timeout, Opts, ?TIMEOUT),
     Async   = proplists:get_value(async, Opts, undefined),
     case pgsql_sock:start_link(self(), Host, Username, Opts) of
         {ok, Sock} ->
@@ -339,6 +346,12 @@ querying(timeout, State) ->
     pgsql_sock:cancel(Sock, Pid, Key),
     {next_state, timeout, State, Timeout};
 
+%% ErrorResponse (FATAL)
+querying({error, E}, State) when E#error.severity == fatal ->
+    #state{timeout = Timeout} = State,
+    notify(State, {fatal_error, E}),
+    {next_state, querying, State, Timeout};
+
 %% ErrorResponse
 querying({error, E}, State) ->
     #state{timeout = Timeout} = State,
@@ -535,7 +548,7 @@ decode_data(Columns, Bin) ->
 decode_data([], _Bin, Acc) ->
     list_to_tuple(lists:reverse(Acc));
 decode_data([_C | T], <<-1:?int32, Rest/binary>>, Acc) ->
-    decode_data(T, Rest, [null | Acc]);
+    decode_data(T, Rest, [undefined | Acc]);
 decode_data([C | T], <<Len:?int32, Value:Len/binary, Rest/binary>>, Acc) ->
     case C of
         #column{type = Type, format = 1}   -> Value2 = pgsql_binary:decode(Type, Value);
@@ -637,14 +650,17 @@ encode_list(L) ->
     Bin = list_to_binary(L),
     <<(byte_size(Bin)):?int32, Bin/binary>>.
 
-notify(#state{reply_to = {Pid, _Tag}}, Msg) ->
-    Pid ! {pgsql, self(), Msg}.
-
-notify_async(#state{async = Pid}, Msg) ->
+notify_pid(Pid, Msg) ->
     case is_pid(Pid) of
         true  -> Pid ! {pgsql, self(), Msg};
         false -> false
     end.
+
+notify(#state{reply_to = {Pid, _Tag}}, Msg) ->
+    notify_pid(Pid, Msg).
+
+notify_async(#state{async = Pid}, Msg) ->
+    notify_pid(Pid, Msg).
 
 to_binary(B) when is_binary(B) -> B;
 to_binary(L) when is_list(L)   -> list_to_binary(L).

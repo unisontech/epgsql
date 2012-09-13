@@ -16,6 +16,7 @@
 
 -define(int16, 1/big-signed-unit:16).
 -define(int32, 1/big-signed-unit:32).
+-define(DEFAULT_CONNECT_TIMEOUT, 30000).
 
 %% -- client interface --
 
@@ -46,9 +47,10 @@ init([C, Host, Username, Opts]) ->
         Database  -> Opts3 = [Opts2 | ["database", 0, Database, 0]]
     end,
 
+    ConnectTimeout = proplists:get_value(connect_timeout, Opts, ?DEFAULT_CONNECT_TIMEOUT),
     Port = proplists:get_value(port, Opts, 5432),
     SockOpts = [{active, false}, {packet, raw}, binary, {nodelay, true}],
-    {ok, S} = gen_tcp:connect(Host, Port, SockOpts),
+    {ok, S} = gen_tcp:connect(Host, Port, SockOpts, ConnectTimeout),
 
     State = #state{
       c    = C,
