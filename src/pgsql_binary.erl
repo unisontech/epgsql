@@ -7,6 +7,7 @@
 -define(int32, 1/big-signed-unit:32).
 -define(datetime, (get(datetime_mod))).
 
+encode(_Any, undefined)                     -> <<-1:?int32>>;
 encode(_Any, null)                          -> <<-1:?int32>>;
 encode(bool, true)                          -> <<1:?int32, 1:1/big-signed-unit:8>>;
 encode(bool, false)                         -> <<1:?int32, 0:1/big-signed-unit:8>>;
